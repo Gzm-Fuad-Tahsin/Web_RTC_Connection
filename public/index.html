@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -136,5 +136,154 @@
       }
     });
   </script>
+</body>
+</html> -->
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Screen Share + Audio</title>
+  <style>
+    video { width: 45%; margin: 10px; border: 2px solid #333; }
+    button { margin: 10px; padding: 10px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Call (Screen + Audio)</h2>
+  <button id="shareScreenBtn">Share Screen Again</button>
+<video id="localVideo" autoplay muted style="width: 200px; border: 2px solid green;"></video>
+<div id="remoteVideo" style="display: flex; flex-wrap: wrap;"></div>
+
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+
+
+  <script>
+  const socket = io();
+  const peers = {};
+  const room = prompt("Enter room name", "default-room") || "default-room";
+
+  const localVideo = document.getElementById('localVideo');
+  const videoGrid = document.getElementById('remoteVideo');
+  const shareScreenBtn = document.getElementById('shareScreenBtn');
+
+  let localStream;
+
+  async function getMedia() {
+    const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    localStream = new MediaStream([
+      ...screenStream.getVideoTracks(),
+      ...audioStream.getAudioTracks()
+    ]);
+
+    localVideo.srcObject = localStream;
+  }
+
+  function addVideoStream(stream) {
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.style.width = '200px';
+    video.style.border = '2px solid #333';
+    videoGrid.appendChild(video);
+  }
+
+  socket.on('all-users', users => {
+    users.forEach(userId => {
+      const peer = createPeer(userId, socket.id);
+      peers[userId] = peer;
+    });
+  });
+
+  socket.on('user-joined', userId => {
+    const peer = addPeer(userId, socket.id);
+    peers[userId] = peer;
+  });
+
+  socket.on('user-signal', payload => {
+    const peer = peers[payload.callerId];
+    peer.signal(payload.signal);
+  });
+
+  socket.on('receiving-returned-signal', payload => {
+    const peer = peers[payload.id];
+    peer.signal(payload.signal);
+  });
+
+  socket.on('user-left', id => {
+    if (peers[id]) {
+      peers[id].destroy();
+      delete peers[id];
+    }
+  });
+
+  function createPeer(userToSignal, callerId) {
+    const peer = new SimplePeer({
+      initiator: true,
+      trickle: false,
+      stream: localStream,
+    });
+
+    peer.on('signal', signal => {
+      socket.emit('sending-signal', { userToSignal, callerId, signal });
+    });
+
+    peer.on('stream', addVideoStream);
+    return peer;
+  }
+
+  function addPeer(incomingId, callerId) {
+    const peer = new SimplePeer({
+      initiator: false,
+      trickle: false,
+      stream: localStream,
+    });
+
+    peer.on('signal', signal => {
+      socket.emit('returning-signal', { signal, callerId: incomingId });
+    });
+
+    peer.on('stream', addVideoStream);
+    return peer;
+  }
+
+  getMedia().then(() => {
+    socket.emit('join', room);
+  });
+
+  shareScreenBtn.onclick = async () => {
+    const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    const videoTrack = screenStream.getVideoTracks()[0];
+
+    for (let peerId in peers) {
+      const sender = peers[peerId]._pc.getSenders().find(s => s.track.kind === 'video');
+      if (sender) {
+        sender.replaceTrack(videoTrack);
+      }
+    }
+
+    localStream.removeTrack(localStream.getVideoTracks()[0]);
+    localStream.addTrack(videoTrack);
+    localVideo.srcObject = localStream;
+
+    videoTrack.onended = () => {
+      alert("Screen sharing ended.");
+    };
+  };
+</script>
+
+
+
 </body>
 </html>
