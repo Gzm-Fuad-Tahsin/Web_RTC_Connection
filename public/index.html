@@ -36,6 +36,16 @@
       return stream.getVideoTracks()[0];
     }
 
+    async function renegotiate() {
+      try {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('offer', { offer, room });
+      } catch (err) {
+        console.error("Renegotiation failed:", err);
+      }
+    }
+
     async function startCallWithScreenAndAudio() {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -53,13 +63,13 @@
         });
 
         screenTrack.onended = () => {
-          console.warn("Screen sharing stopped.");
           const fallbackTrack = createBlackVideoTrack();
-          const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+          const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
           if (sender) {
             sender.replaceTrack(fallbackTrack);
+            localVideo.srcObject = new MediaStream([fallbackTrack, audioTrack]);
+            renegotiate(); // notify peer of change
           }
-          localVideo.srcObject = new MediaStream([fallbackTrack, audioTrack]);
         };
       } catch (err) {
         console.error("Error starting call:", err);
@@ -78,7 +88,9 @@
             const fallback = createBlackVideoTrack();
             sender.replaceTrack(fallback);
             localVideo.srcObject = new MediaStream([fallback]);
+            renegotiate();
           };
+          renegotiate(); // notify other peer
         }
       } catch (error) {
         console.error("Error switching screen:", error);
@@ -102,9 +114,7 @@
     socket.emit('join', room);
 
     socket.on('user-joined', async () => {
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-      socket.emit('offer', { offer, room });
+      renegotiate();
     });
 
     socket.on('offer', async ({ offer }) => {
