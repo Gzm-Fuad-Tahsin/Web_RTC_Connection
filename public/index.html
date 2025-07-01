@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Screen Share + Audio</title>
+  <style>
+    video { width: 45%; margin: 10px; border: 2px solid #333; }
+    button { margin: 10px; padding: 10px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Call (Screen + Audio)</h2>
+  <button id="shareScreenBtn">Share Screen Again</button>
+  <video id="localVideo" autoplay muted></video>
+  <video id="remoteVideo" autoplay></video>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const room = "test-room";
+    const shareScreenBtn = document.getElementById("shareScreenBtn");
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const peerConnection = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    let localStream;
+
+    function createBlackVideoTrack() {
+      const canvas = Object.assign(document.createElement("canvas"), { width: 640, height: 480 });
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "black";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const stream = canvas.captureStream();
+      return stream.getVideoTracks()[0];
+    }
+
+    async function startCallWithScreenAndAudio() {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        const [screenTrack] = screenStream.getVideoTracks();
+        const [audioTrack] = audioStream.getAudioTracks();
+
+        const combinedStream = new MediaStream([screenTrack, audioTrack]);
+        localStream = combinedStream;
+        localVideo.srcObject = combinedStream;
+
+        combinedStream.getTracks().forEach(track => {
+          peerConnection.addTrack(track, combinedStream);
+        });
+
+        screenTrack.onended = () => {
+          console.warn("Screen sharing stopped.");
+          const fallbackTrack = createBlackVideoTrack();
+          const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(fallbackTrack);
+          }
+          localVideo.srcObject = new MediaStream([fallbackTrack, audioTrack]);
+        };
+      } catch (err) {
+        console.error("Error starting call:", err);
+      }
+    }
+
+    async function switchToScreenShare() {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(screenTrack);
+          localVideo.srcObject = new MediaStream([screenTrack]);
+          screenTrack.onended = () => {
+            const fallback = createBlackVideoTrack();
+            sender.replaceTrack(fallback);
+            localVideo.srcObject = new MediaStream([fallback]);
+          };
+        }
+      } catch (error) {
+        console.error("Error switching screen:", error);
+      }
+    }
+
+    shareScreenBtn.onclick = switchToScreenShare;
+
+    startCallWithScreenAndAudio();
+
+    peerConnection.ontrack = ({ streams: [stream] }) => {
+      remoteVideo.srcObject = stream;
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit('ice-candidate', { candidate: event.candidate, room });
+      }
+    };
+
+    socket.emit('join', room);
+
+    socket.on('user-joined', async () => {
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.emit('offer', { offer, room });
+    });
+
+    socket.on('offer', async ({ offer }) => {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      socket.emit('answer', { answer, room });
+    });
+
+    socket.on('answer', async ({ answer }) => {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+
+    socket.on('ice-candidate', async (candidate) => {
+      try {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {
+        console.error('Error adding ICE candidate', e);
+      }
+    });
+  </script>
+</body>
+</html>
